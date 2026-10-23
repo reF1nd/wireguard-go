@@ -49,6 +49,7 @@ type StdNetBind struct {
 	egressProvider      EgressProvider
 	onRead              func(size int)
 	onWrite             func(size int)
+	disableGSO          bool
 	reservedAccess      sync.RWMutex
 	reservedForEndpoint map[netip.AddrPort][3]uint8
 
@@ -89,7 +90,7 @@ type stdNetSocket struct {
 
 func (s *StdNetBind) newSocket(c *net.UDPConn, isV6 bool) (*stdNetSocket, error) {
 	sock := &stdNetSocket{conn: c, isV6: isV6, messagePool: &s.messagePool}
-	tx, rx := supportsUDPOffload(c)
+	tx, rx := s.supportsUDPOffload(c)
 	sock.txOffload.Store(tx)
 	sock.rxOffload = rx
 	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
@@ -327,7 +328,6 @@ again:
 		closeConns(v4conns)
 		return nil, 0, err
 	}
-
 	var (
 		v4, v6 []*stdNetSocket
 		fns    []ReceiveFunc
@@ -405,6 +405,22 @@ func (s *StdNetBind) SetEgressProvider(provider EgressProvider) {
 func (s *StdNetBind) SetIOActivityFuncs(onRead func(size int), onWrite func(size int)) {
 	s.onRead = onRead
 	s.onWrite = onWrite
+}
+
+// SetDisableGSO prohibits UDP send segmentation while keeping batch I/O and
+// UDP GRO. Call it before Open; it persists across Close and Open.
+func (s *StdNetBind) SetDisableGSO(disable bool) {
+	s.disableGSO = disable
+}
+
+// DisableGSO reports the policy set by SetDisableGSO.
+func (s *StdNetBind) DisableGSO() bool {
+	return s.disableGSO
+}
+
+func (s *StdNetBind) supportsUDPOffload(conn *net.UDPConn) (txOffload, rxOffload bool) {
+	txOffload, rxOffload = supportsUDPOffload(conn)
+	return txOffload && !s.disableGSO, rxOffload
 }
 
 // messagePool recycles the [ipv6.Message] batches that the read and write
